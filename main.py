@@ -1,37 +1,25 @@
-import aiohttp as io
+import aiosqlite
 import asyncio
-import time
+import aiohttp
 from bs4 import BeautifulSoup
 
-# --- PART 1: The Worker (Blocking CPU code) ---
-def parse_html(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    title = soup.title.string if soup.title else "No Title"
-    # Get text of all H1s cleanly
-    h1_list = [h.get_text().strip() for h in soup.find_all('h1')]
-    return title, h1_list
+def parsing(html):
+    soup=BeautifulSoup(html,'html.parser')
+    title=soup.title.string if soup.title else "unknown_page"
+    h1_tags=[h.get_text().strip() for h in soup.find_all('h1')]
+    h2_tags=[h.get_text() for h in soup.find_all('h2')]
+    h1=','.join(h1_tags)
+    h2=','.join(h2_tags)
+    return (title,h1,h2)
 
-# --- PART 2: The Manager (Async I/O code) ---
-async def scrapping(url, session):
-    start_time = time.time()
-    print(f"🔄 Fetching: {url}...")
-    
-    try:
-        async with session.get(url) as response:
-            html = await response.text()
-            
-            title, headers = await asyncio.to_thread(parse_html, html)
-            
-            # Print Results
-            print(f"\n✅ FINISHED: {url}")
-            print(f"   Title: {title}")
-            print(f"   H1 Tags: {headers}")
-            
-            end_time = time.time()
-            print(f"   ⏱️ Time taken: {end_time - start_time:.2f}s")
-            
-    except Exception as e:
-        print(f"❌ Error with {url}: {e}")
+async def scraping(session,urls,db):
+    l=tuple()
+    async with session.get(urls) as response:
+        html=await response.text()
+        result=await asyncio.to_thread(parsing,html)
+        await db.execute("insert into scraped values(?,?,?)",(result))
+        await db.commit()
+    print("your data is now avilabe in the database!")
 
 async def main():
     urls = []
@@ -43,14 +31,25 @@ async def main():
 
     print("\n🚀 Starting Concurrent Scrape...")
     
-    async with io.ClientSession() as session:
-        tasks = []
-        for url in urls:
-            # Create task with the shared session
-            tasks.append(scrapping(url, session))
-        
-        # Run all at once
-        await asyncio.gather(*tasks)
+    async with aiosqlite.connect("scraped") as db:
+        await db.execute("create table if not exists scraped(title text ,h1_tag text,h2_tag text )")
+        await db.commit()
+        print("the scraped database is used to store the data!")
+        async with aiohttp.ClientSession() as session:
+            tasks=[]
+            for x in urls:
+                tasks.append(scraping(session,x,db))
 
-if __name__ == "__main__":
+            await asyncio.gather(*tasks)
+
+        print("\n📊 --- FINAL DATABASE CONTENT ---")
+        async with db.execute("SELECT * FROM scraped ORDER BY title") as cursor:
+            rows = await cursor.fetchall()  
+            for row in rows:
+                print(f"Title: {row[0]}")
+                print(f"H1s:   {row[1][:50]}...")
+                print(f"H2s:   {row[2][:50]}...") 
+                print("-" * 20)
+
+if __name__=='__main__':
     asyncio.run(main())
